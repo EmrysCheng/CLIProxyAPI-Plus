@@ -232,6 +232,23 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/devin/callback", devinCallbackHandler)
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+
+	// OAuth callback relay endpoints are always registered (no management key
+	// required by design — safety comes from the per-session state value), so
+	// remote panel deployments can submit provider callbacks even when no
+	// management secret is configured.
+	oauthCallbackAvailability := func(c *gin.Context) {
+		cfg := s.getConfig()
+		if cfg == nil || cfg.Home.Enabled {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.Next()
+	}
+	s.engine.POST("/v0/management/oauth-callback", oauthCallbackAvailability, s.mgmt.PostOAuthCallback)
+	s.engine.GET("/v0/management/oauth-callback", oauthCallbackAvailability, s.mgmt.GetOAuthCallback)
+	s.engine.GET("/v8/management/oauth/callback", oauthCallbackAvailability, s.mgmt.GetOAuthCallbackV8)
+	s.engine.POST("/v8/management/oauth/callback", oauthCallbackAvailability, s.mgmt.PostOAuthCallbackV8)
 }
 
 func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHost {

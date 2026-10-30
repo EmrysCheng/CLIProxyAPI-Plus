@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+		"github.com/gin-gonic/gin"
+		"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+		"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+		coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -112,6 +113,41 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 		}
 	}
 
+	// Built-in antigravity probe: query loadCodeAssist and fetchAvailableModels
+	// to retrieve the paid tier and the Gemini and Claude & GPT model quotas.
+	if provider == "antigravity" || (body.Provider == "" && strings.EqualFold(auth.Provider, "antigravity")) {
+		quotaResp, errQuota := executor.QueryAntigravityQuota(c.Request.Context(), h.cfg, auth)
+		if errQuota == nil {
+			c.JSON(http.StatusOK, quotaResp)
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("antigravity quota query failed: %v", errQuota)})
+		return
+	}
+
+	// Built-in codex probe: query ChatGPT /wham/usage for 5h and weekly rate limits.
+	if provider == "codex" || (body.Provider == "" && strings.EqualFold(auth.Provider, "codex")) {
+		quotaResp, errQuota := executor.QueryCodexQuota(c.Request.Context(), h.cfg, auth)
+		if errQuota == nil {
+			c.JSON(http.StatusOK, quotaResp)
+			return
+		}
+		// If live probe fails, fall back to generic/cached quota
+		c.JSON(http.StatusOK, executor.QueryGenericOAuthQuota(auth))
+		return
+	}
+
+	// Built-in devin probe: query Cognition Devin GetUserStatus RPC.
+	if provider == "devin" || (body.Provider == "" && strings.EqualFold(auth.Provider, "devin")) {
+		quotaResp, errQuota := executor.QueryDevinQuota(c.Request.Context(), h.cfg, auth)
+		if errQuota == nil {
+			c.JSON(http.StatusOK, quotaResp)
+			return
+		}
+		c.JSON(http.StatusOK, executor.QueryGenericOAuthQuota(auth))
+		return
+	}
+
 	// Fallback to declarative quota probe if configured in metadata
 	if auth.Metadata != nil {
 		if rawProbe, okProbe := auth.Metadata["quota_probe"]; okProbe && rawProbe != nil {
@@ -129,7 +165,8 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "no quota provider available for credential"})
+	// For any other OAuth provider (Claude, Kimi, xAI, Meta, Gemini), synthesize standard response
+	c.JSON(http.StatusOK, executor.QueryGenericOAuthQuota(auth))
 }
 
 // ResetCredentialQuota resets quota or usage for a credential.

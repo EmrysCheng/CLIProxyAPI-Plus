@@ -16,9 +16,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+		"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
+		"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+		"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+		coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -700,7 +701,69 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			entry["quota_probe"] = probe
 		}
 	}
-	if email := authEmail(auth); email != "" {
+		// Built-in support for OAuth providers' quota and plan detection
+		providerLower := strings.ToLower(strings.TrimSpace(auth.Provider))
+		switch providerLower {
+		case "antigravity":
+			entry["supports_quota"] = true
+			if hint, ok := coreauth.GetAntigravityCreditsHint(auth.ID); ok && hint.Known && hint.PaidTierID != "" {
+				tier := executor.AntigravityTierDisplayName(hint.PaidTierID)
+				if tier != "" {
+					entry["account_type"] = tier
+					entry["plan"] = tier
+				}
+			}
+		case "codex":
+			entry["supports_quota"] = true
+		case "claude":
+			entry["supports_quota"] = true
+			if org, ok := auth.Metadata["organization_name"].(string); ok && org != "" {
+				entry["organization_name"] = org
+				entry["account_type"] = org
+				entry["plan"] = org
+			}
+		case "devin":
+			entry["supports_quota"] = true
+			if planVal, ok := auth.Metadata["plan"].(string); ok && planVal != "" {
+				entry["plan"] = "Devin " + strings.Title(strings.ToLower(planVal))
+				entry["account_type"] = entry["plan"]
+			}
+			if orgVal, ok := auth.Metadata["org_name"].(string); ok && orgVal != "" {
+				entry["organization_name"] = orgVal
+			}
+		case "kimi", "kimi-ai":
+			entry["supports_quota"] = true
+			if providerLower == "kimi-ai" {
+				entry["plan"] = "Kimi AI"
+			} else {
+				entry["plan"] = "Kimi Code"
+			}
+			entry["account_type"] = entry["plan"]
+		case "xai":
+			entry["supports_quota"] = true
+			entry["plan"] = "SuperGrok"
+			entry["account_type"] = "SuperGrok"
+		case "meta":
+			entry["supports_quota"] = true
+			entry["plan"] = "Muse Code"
+			entry["account_type"] = "Muse Code"
+		case "gemini":
+			entry["supports_quota"] = true
+			entry["plan"] = "Google AI Studio"
+			entry["account_type"] = "Google AI Studio"
+		}
+
+		if auth.Metadata != nil {
+			if planVal, okPlan := auth.Metadata["plan"].(string); okPlan && planVal != "" {
+				entry["account_type"] = planVal
+				entry["plan"] = planVal
+			}
+			if qc, okQC := auth.Metadata["quota_cache"]; okQC && qc != nil {
+				entry["quota"] = qc
+			}
+		}
+
+		if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
 	if projectID := authProjectID(auth); projectID != "" {
@@ -743,9 +806,14 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			log.WithError(err).Warnf("failed to stat auth file %s", path)
 		}
 	}
-	if claims := extractCodexIDTokenClaims(auth); claims != nil {
-		entry["id_token"] = claims
-	}
+		if claims := extractCodexIDTokenClaims(auth); claims != nil {
+			entry["id_token"] = claims
+			if planType, okPlan := claims["plan_type"].(string); okPlan && planType != "" {
+				planDisplay := "ChatGPT " + strings.Title(strings.ToLower(planType))
+				entry["plan"] = planDisplay
+				entry["account_type"] = planDisplay
+			}
+		}
 	// Expose priority from Attributes (set by synthesizer from JSON "priority" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
 	if p := strings.TrimSpace(authAttribute(auth, "priority")); p != "" {

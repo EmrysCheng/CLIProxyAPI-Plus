@@ -37,6 +37,7 @@ type AntigravityCreditsHint struct {
 	CreditAmount    float64
 	MinCreditAmount float64
 	PaidTierID      string
+	ResetDate       time.Time
 	UpdatedAt       time.Time
 }
 
